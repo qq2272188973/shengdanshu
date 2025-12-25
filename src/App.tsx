@@ -14,7 +14,6 @@ import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { MathUtils } from 'three';
 import * as random from 'maath/random';
-import { GestureRecognizer, FilesetResolver, DrawingUtils } from "@mediapipe/tasks-vision";
 
 // --- 动态生成照片列表 (top.jpg + 1.jpg 到 31.jpg) ---
 const TOTAL_NUMBERED_PHOTOS = 22;
@@ -89,10 +88,10 @@ const getTreePosition = () => {
 };
 
 // --- Component: Foliage ---
-const Foliage = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
+const Foliage = ({ state, highQuality }: { state: 'CHAOS' | 'FORMED'; highQuality: boolean }) => {
   const materialRef = useRef<any>(null);
+  const count = highQuality ? CONFIG.counts.foliage : 8000;
   const { positions, targetPositions, randoms } = useMemo(() => {
-    const count = CONFIG.counts.foliage;
     const positions = new Float32Array(count * 3); const targetPositions = new Float32Array(count * 3); const randoms = new Float32Array(count);
     const spherePoints = random.inSphere(new Float32Array(count * 3), { radius: 25 }) as Float32Array;
     for (let i = 0; i < count; i++) {
@@ -102,7 +101,7 @@ const Foliage = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
       randoms[i] = Math.random();
     }
     return { positions, targetPositions, randoms };
-  }, []);
+  }, [count]);
   useFrame((rootState, delta) => {
     if (materialRef.current) {
       materialRef.current.uTime = rootState.clock.elapsedTime;
@@ -110,6 +109,7 @@ const Foliage = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
       materialRef.current.uProgress = MathUtils.damp(materialRef.current.uProgress, targetProgress, 1.5, delta);
     }
   });
+
   return (
     <points>
       <bufferGeometry>
@@ -117,17 +117,28 @@ const Foliage = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
         <bufferAttribute attach="attributes-aTargetPos" args={[targetPositions, 3]} />
         <bufferAttribute attach="attributes-aRandom" args={[randoms, 1]} />
       </bufferGeometry>
-      {/* @ts-ignore */}
       <foliageMaterial ref={materialRef} transparent depthWrite={false} blending={THREE.AdditiveBlending} />
     </points>
   );
 };
 
 // --- Component: Photo Ornaments (Double-Sided Polaroid) ---
-const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
-  const textures = useTexture(CONFIG.photos.body);
+const PhotoOrnaments = ({
+  state,
+  highQuality,
+  onSelectPhoto
+}: {
+  state: 'CHAOS' | 'FORMED';
+  highQuality: boolean;
+  onSelectPhoto: (photoIndex: number) => void;
+}) => {
+  const textureUrls = useMemo(
+    () => (highQuality ? CONFIG.photos.body : CONFIG.photos.body.slice(0, 6)),
+    [highQuality]
+  );
+  const textures = useTexture(textureUrls);
   const gl = useThree((s) => s.gl);
-  const count = CONFIG.counts.ornaments;
+  const count = highQuality ? CONFIG.counts.ornaments : 70;
   const groupRef = useRef<THREE.Group>(null);
 
   useEffect(() => {
@@ -149,16 +160,16 @@ const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
 
   const data = useMemo(() => {
     return new Array(count).fill(0).map((_, i) => {
+      const photoIndex = i % CONFIG.photos.body.length;
       const chaosPos = new THREE.Vector3((Math.random()-0.5)*70, (Math.random()-0.5)*70, (Math.random()-0.5)*70);
       const h = CONFIG.tree.height;
       const rBase = CONFIG.tree.radius;
 
-      // 更均匀的“螺旋花环”分布：y 轴分层 + 黄金角绕圈，避免随机堆叠
       const t = count <= 1 ? 0 : i / (count - 1);
       const y = (h / 2) - t * h;
       const goldenAngle = Math.PI * (3 - Math.sqrt(5));
       const theta = i * goldenAngle;
-      const normalizedY = (y + (h / 2)) / h;
+      const normalizedY = (y + (h/2)) / h;
       const currentRadius = (rBase * (1 - normalizedY)) + 1.2;
       const radialWobble = 0.25 * Math.sin(i * 0.7);
       const angularJitter = (Math.random() - 0.5) * 0.12;
@@ -177,20 +188,22 @@ const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
       const borderColor = CONFIG.colors.borders[Math.floor(Math.random() * CONFIG.colors.borders.length)];
 
       const rotationSpeed = {
-        x: (Math.random() - 0.5) * 1.0,
-        y: (Math.random() - 0.5) * 1.0,
-        z: (Math.random() - 0.5) * 1.0
+        x: (Math.random()-0.5)*2.0,
+        y: (Math.random()-0.5)*2.0,
+        z: (Math.random()-0.5)*2.0
       };
       const chaosRotation = new THREE.Euler(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI);
 
       return {
         chaosPos, targetPos, scale: baseScale, weight,
         textureIndex: i % textures.length,
+        photoIndex,
         borderColor,
         currentPos: chaosPos.clone(),
         chaosRotation,
         rotationSpeed,
         wobbleOffset: Math.random() * 10,
+
         wobbleSpeed: 0.5 + Math.random() * 0.5
       };
     });
@@ -209,18 +222,17 @@ const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
       group.position.copy(objData.currentPos);
 
       if (isFormed) {
-         const targetLookPos = new THREE.Vector3(group.position.x * 2, group.position.y + 0.5, group.position.z * 2);
-         group.lookAt(targetLookPos);
+        const targetLookPos = new THREE.Vector3(group.position.x * 2, group.position.y + 0.5, group.position.z * 2);
+        group.lookAt(targetLookPos);
 
-         const wobbleX = Math.sin(time * objData.wobbleSpeed + objData.wobbleOffset) * 0.05;
-         const wobbleZ = Math.cos(time * objData.wobbleSpeed * 0.8 + objData.wobbleOffset) * 0.05;
-         group.rotation.x += wobbleX;
-         group.rotation.z += wobbleZ;
-
+        const wobbleX = Math.sin(time * objData.wobbleSpeed + objData.wobbleOffset) * 0.05;
+        const wobbleZ = Math.cos(time * objData.wobbleSpeed * 0.8 + objData.wobbleOffset) * 0.05;
+        group.rotation.x += wobbleX;
+        group.rotation.z += wobbleZ;
       } else {
-         group.rotation.x += delta * objData.rotationSpeed.x;
-         group.rotation.y += delta * objData.rotationSpeed.y;
-         group.rotation.z += delta * objData.rotationSpeed.z;
+        group.rotation.x += delta * objData.rotationSpeed.x;
+        group.rotation.y += delta * objData.rotationSpeed.y;
+        group.rotation.z += delta * objData.rotationSpeed.z;
       }
     });
   });
@@ -228,13 +240,21 @@ const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
   return (
     <group ref={groupRef}>
       {data.map((obj, i) => (
-        <group key={i} scale={[obj.scale, obj.scale, obj.scale]} rotation={state === 'CHAOS' ? obj.chaosRotation : [0,0,0]}>
-          {/* 正面 */}
+        <group
+          key={i}
+          scale={[obj.scale, obj.scale, obj.scale]}
+          rotation={state === 'CHAOS' ? obj.chaosRotation : [0,0,0]}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onSelectPhoto(obj.photoIndex);
+          }}
+        >
           <group position={[0, 0, 0.015]}>
             <mesh geometry={photoGeometry}>
               <meshStandardMaterial
                 map={textures[obj.textureIndex]}
                 roughness={0.5} metalness={0}
+
                 emissive={CONFIG.colors.white} emissiveMap={textures[obj.textureIndex]} emissiveIntensity={1.0}
                 side={THREE.FrontSide}
               />
@@ -243,7 +263,6 @@ const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
               <meshStandardMaterial color={obj.borderColor} roughness={0.9} metalness={0} side={THREE.FrontSide} />
             </mesh>
           </group>
-          {/* 背面 */}
           <group position={[0, 0, -0.015]} rotation={[0, Math.PI, 0]}>
             <mesh geometry={photoGeometry}>
               <meshStandardMaterial
@@ -264,8 +283,8 @@ const PhotoOrnaments = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
 };
 
 // --- Component: Christmas Elements ---
-const ChristmasElements = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
-  const count = CONFIG.counts.elements;
+const ChristmasElements = ({ state, highQuality }: { state: 'CHAOS' | 'FORMED'; highQuality: boolean }) => {
+  const count = highQuality ? CONFIG.counts.elements : 80;
   const groupRef = useRef<THREE.Group>(null);
 
   const boxGeometry = useMemo(() => new THREE.BoxGeometry(0.8, 0.8, 0.8), []);
@@ -292,7 +311,7 @@ const ChristmasElements = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
       const rotationSpeed = { x: (Math.random()-0.5)*2.0, y: (Math.random()-0.5)*2.0, z: (Math.random()-0.5)*2.0 };
       return { type, chaosPos, targetPos, color, scale, currentPos: chaosPos.clone(), chaosRotation: new THREE.Euler(Math.random()*Math.PI, Math.random()*Math.PI, Math.random()*Math.PI), rotationSpeed };
     });
-  }, [boxGeometry, sphereGeometry, caneGeometry]);
+  }, [count, boxGeometry, sphereGeometry, caneGeometry]);
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
@@ -311,30 +330,36 @@ const ChristmasElements = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
     <group ref={groupRef}>
       {data.map((obj, i) => {
         let geometry; if (obj.type === 0) geometry = boxGeometry; else if (obj.type === 1) geometry = sphereGeometry; else geometry = caneGeometry;
-        return ( <mesh key={i} scale={[obj.scale, obj.scale, obj.scale]} geometry={geometry} rotation={obj.chaosRotation}>
-          <meshStandardMaterial color={obj.color} roughness={0.3} metalness={0.4} emissive={obj.color} emissiveIntensity={0.2} />
-        </mesh> )})}
+        return (
+          <mesh key={i} scale={[obj.scale, obj.scale, obj.scale]} geometry={geometry} rotation={obj.chaosRotation}>
+            <meshStandardMaterial color={obj.color} roughness={0.3} metalness={0.4} emissive={obj.color} emissiveIntensity={0.2} />
+          </mesh>
+        );
+      })}
     </group>
   );
 };
 
 // --- Component: Fairy Lights ---
-const FairyLights = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
-  const count = CONFIG.counts.lights;
+const FairyLights = ({ state, highQuality }: { state: 'CHAOS' | 'FORMED'; highQuality: boolean }) => {
+  const count = highQuality ? CONFIG.counts.lights : 150;
   const groupRef = useRef<THREE.Group>(null);
   const geometry = useMemo(() => new THREE.SphereGeometry(0.8, 8, 8), []);
 
   const data = useMemo(() => {
     return new Array(count).fill(0).map(() => {
       const chaosPos = new THREE.Vector3((Math.random()-0.5)*60, (Math.random()-0.5)*60, (Math.random()-0.5)*60);
-      const h = CONFIG.tree.height; const y = (Math.random() * h) - (h / 2); const rBase = CONFIG.tree.radius;
-      const currentRadius = (rBase * (1 - (y + (h/2)) / h)) + 0.3; const theta = Math.random() * Math.PI * 2;
+      const h = CONFIG.tree.height;
+      const y = (Math.random() * h) - (h / 2);
+      const rBase = CONFIG.tree.radius;
+      const currentRadius = (rBase * (1 - (y + (h/2)) / h)) + 0.3;
+      const theta = Math.random() * Math.PI * 2;
       const targetPos = new THREE.Vector3(currentRadius * Math.cos(theta), y, currentRadius * Math.sin(theta));
       const color = CONFIG.colors.lights[Math.floor(Math.random() * CONFIG.colors.lights.length)];
       const speed = 2 + Math.random() * 3;
       return { chaosPos, targetPos, color, speed, currentPos: chaosPos.clone(), timeOffset: Math.random() * 100 };
     });
-  }, []);
+  }, [count]);
 
   useFrame((stateObj, delta) => {
     if (!groupRef.current) return;
@@ -353,14 +378,15 @@ const FairyLights = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
 
   return (
     <group ref={groupRef}>
-      {data.map((obj, i) => ( <mesh key={i} scale={[0.15, 0.15, 0.15]} geometry={geometry}>
+      {data.map((obj, i) => (
+        <mesh key={i} scale={[0.15, 0.15, 0.15]} geometry={geometry}>
           <meshStandardMaterial color={obj.color} emissive={obj.color} emissiveIntensity={0} toneMapped={false} />
-        </mesh> ))}
+        </mesh>
+      ))}
     </group>
   );
 };
 
-// --- Component: Tree Trunk ---
 const TreeTrunk = () => {
   const trunkHeight = 8;
   const trunkGeometry = useMemo(() => new THREE.CylinderGeometry(1.2, 2.0, trunkHeight, 18), []);
@@ -382,11 +408,11 @@ const TreeTrunk = () => {
 };
 
 // --- Component: Falling Snow ---
-const FallingSnow = () => {
+const FallingSnow = ({ highQuality }: { highQuality: boolean }) => {
   const pointsRef = useRef<THREE.Points>(null);
 
   const { positions, speeds, drift } = useMemo(() => {
-    const count = 1800;
+    const count = highQuality ? 1800 : 900;
     const positions = new Float32Array(count * 3);
     const speeds = new Float32Array(count);
     const drift = new Float32Array(count);
@@ -401,7 +427,7 @@ const FallingSnow = () => {
     }
 
     return { positions, speeds, drift };
-  }, []);
+  }, [highQuality]);
 
   useFrame((state, delta) => {
     const points = pointsRef.current;
@@ -494,7 +520,17 @@ const TopStar = ({ state }: { state: 'CHAOS' | 'FORMED' }) => {
 };
 
 // --- Main Scene Experience ---
-const Experience = ({ sceneState, rotationSpeed }: { sceneState: 'CHAOS' | 'FORMED', rotationSpeed: number }) => {
+const Experience = ({
+  sceneState,
+  rotationSpeed,
+  highQuality,
+  onSelectPhoto
+}: {
+  sceneState: 'CHAOS' | 'FORMED';
+  rotationSpeed: number;
+  highQuality: boolean;
+  onSelectPhoto: (photoIndex: number) => void;
+}) => {
   const controlsRef = useRef<any>(null);
   useFrame(() => {
     if (controlsRef.current) {
@@ -509,8 +545,8 @@ const Experience = ({ sceneState, rotationSpeed }: { sceneState: 'CHAOS' | 'FORM
       <OrbitControls ref={controlsRef} enablePan={false} enableZoom={true} minDistance={12} maxDistance={140} autoRotate={rotationSpeed === 0 && sceneState === 'FORMED'} autoRotateSpeed={0.3} maxPolarAngle={Math.PI / 1.7} />
 
       <color attach="background" args={['#000300']} />
-      <Stars radius={100} depth={50} count={5000} factor={4} saturation={0} fade speed={1} />
-      <FallingSnow />
+      <Stars radius={100} depth={50} count={highQuality ? 5000 : 2000} factor={4} saturation={0} fade speed={1} />
+      <FallingSnow highQuality={highQuality} />
       <Environment preset="night" background={false} />
 
       <ambientLight intensity={0.4} color="#003311" />
@@ -520,20 +556,16 @@ const Experience = ({ sceneState, rotationSpeed }: { sceneState: 'CHAOS' | 'FORM
 
       <group position={[0, -6, 0]}>
         <TreeTrunk />
-        <Foliage state={sceneState} />
+        <Foliage state={sceneState} highQuality={highQuality} />
         <Suspense fallback={null}>
-           <PhotoOrnaments state={sceneState} />
-           <ChristmasElements state={sceneState} />
-           <FairyLights state={sceneState} />
+           <PhotoOrnaments state={sceneState} highQuality={highQuality} onSelectPhoto={onSelectPhoto} />
+           <ChristmasElements state={sceneState} highQuality={highQuality} />
+           <FairyLights state={sceneState} highQuality={highQuality} />
            <TopStar state={sceneState} />
         </Suspense>
-        <Sparkles count={600} scale={50} size={8} speed={0.4} opacity={0.4} color={CONFIG.colors.silver} />
+        <Sparkles count={highQuality ? 600 : 250} scale={50} size={8} speed={0.4} opacity={0.4} color={CONFIG.colors.silver} />
       </group>
 
-      <EffectComposer>
-        <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.1} intensity={1.5} radius={0.5} mipmapBlur />
-        <Vignette eskil={false} offset={0.1} darkness={1.2} />
-      </EffectComposer>
     </>
   );
 };
@@ -545,14 +577,23 @@ const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    let gestureRecognizer: GestureRecognizer;
+    let gestureRecognizer: any;
     let requestRef: number;
+    let stream: MediaStream | null = null;
+    let DrawingUtilsCtor: any;
+    let GestureRecognizerCtor: any;
+    let FilesetResolverObj: any;
 
     const setup = async () => {
       onStatus("DOWNLOADING AI...");
       try {
-        const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
-        gestureRecognizer = await GestureRecognizer.createFromOptions(vision, {
+        const visionTasks = await import("@mediapipe/tasks-vision");
+        DrawingUtilsCtor = visionTasks.DrawingUtils;
+        GestureRecognizerCtor = visionTasks.GestureRecognizer;
+        FilesetResolverObj = visionTasks.FilesetResolver;
+
+        const vision = await FilesetResolverObj.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+        gestureRecognizer = await GestureRecognizerCtor.createFromOptions(vision, {
           baseOptions: {
             modelAssetPath: "https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task",
             delegate: "GPU"
@@ -560,9 +601,10 @@ const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
           runningMode: "VIDEO",
           numHands: 1
         });
+
         onStatus("REQUESTING CAMERA...");
         if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+          stream = await navigator.mediaDevices.getUserMedia({ video: true });
           if (videoRef.current) {
             videoRef.current.srcObject = stream;
             videoRef.current.play();
@@ -586,8 +628,8 @@ const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
                 ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
                 canvasRef.current.width = videoRef.current.videoWidth; canvasRef.current.height = videoRef.current.videoHeight;
                 if (results.landmarks) for (const landmarks of results.landmarks) {
-                        const drawingUtils = new DrawingUtils(ctx);
-                        drawingUtils.drawConnectors(landmarks, GestureRecognizer.HAND_CONNECTIONS, { color: "#FFD700", lineWidth: 2 });
+                        const drawingUtils = new DrawingUtilsCtor(ctx);
+                        drawingUtils.drawConnectors(landmarks, GestureRecognizerCtor.HAND_CONNECTIONS, { color: "#FFD700", lineWidth: 2 });
                         drawingUtils.drawLandmarks(landmarks, { color: "#FF0000", lineWidth: 1 });
                 }
             } else if (ctx && !debugMode) ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
@@ -608,7 +650,15 @@ const GestureController = ({ onGesture, onMove, onStatus, debugMode }: any) => {
       }
     };
     setup();
-    return () => cancelAnimationFrame(requestRef);
+    return () => {
+      cancelAnimationFrame(requestRef);
+      if (stream) {
+        stream.getTracks().forEach((t) => t.stop());
+      }
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
   }, [onGesture, onMove, onStatus, debugMode]);
 
   return (
@@ -625,15 +675,150 @@ export default function GrandTreeApp() {
   const [rotationSpeed, setRotationSpeed] = useState(0);
   const [aiStatus, setAiStatus] = useState("INITIALIZING...");
   const [debugMode, setDebugMode] = useState(false);
+  const [aiEnabled, setAiEnabled] = useState(false);
+  const [highQuality, setHighQuality] = useState(false);
+  const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
+  const [viewerScale, setViewerScale] = useState(1);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => setHighQuality(true), 900);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    if (!aiEnabled) {
+      setAiStatus("AI DISABLED");
+    } else {
+      setAiStatus("INITIALIZING...");
+    }
+  }, [aiEnabled]);
+
+  const closeViewer = () => {
+    setSelectedPhotoIndex(null);
+    setViewerScale(1);
+  };
+
+  const currentPhotoUrl = selectedPhotoIndex === null ? null : CONFIG.photos.body[selectedPhotoIndex];
 
   return (
     <div style={{ width: '100vw', height: '100vh', backgroundColor: '#000', position: 'relative', overflow: 'hidden' }}>
       <div style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, zIndex: 1 }}>
-        <Canvas dpr={[1, 2.5]} gl={{ toneMapping: THREE.ReinhardToneMapping, antialias: true }} shadows>
-            <Experience sceneState={sceneState} rotationSpeed={rotationSpeed} />
+        <Canvas dpr={highQuality ? [1, 2] : 1} gl={{ toneMapping: THREE.ReinhardToneMapping, antialias: true }} shadows>
+            <Experience
+              sceneState={sceneState}
+              rotationSpeed={rotationSpeed}
+              highQuality={highQuality}
+              onSelectPhoto={(idx) => {
+                setSelectedPhotoIndex(idx);
+                setViewerScale(1);
+              }}
+            />
+            {!highQuality ? null : (
+              <EffectComposer>
+                <Bloom luminanceThreshold={0.8} luminanceSmoothing={0.1} intensity={1.5} radius={0.5} mipmapBlur />
+                <Vignette eskil={false} offset={0.1} darkness={1.2} />
+              </EffectComposer>
+            )}
         </Canvas>
       </div>
-      <GestureController onGesture={setSceneState} onMove={setRotationSpeed} onStatus={setAiStatus} debugMode={debugMode} />
+
+      {currentPhotoUrl ? (
+        <div
+          onPointerDown={() => closeViewer()}
+          onWheel={(e) => {
+            e.preventDefault();
+            const dir = e.deltaY > 0 ? -1 : 1;
+            setViewerScale((s) => Math.min(4, Math.max(1, s + dir * 0.15)));
+          }}
+
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 30,
+            background: 'rgba(0,0,0,0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backdropFilter: 'blur(6px)'
+          }}
+        >
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{
+              width: 'min(92vw, 1100px)',
+              height: 'min(86vh, 760px)',
+              position: 'relative',
+              border: '1px solid rgba(255,255,255,0.15)',
+              background: 'rgba(0,0,0,0.35)',
+              overflow: 'hidden'
+            }}
+          >
+            <img
+              src={currentPhotoUrl}
+              alt=""
+              draggable={false}
+              onDoubleClick={() => setViewerScale(1)}
+              style={{
+                width: '100%',
+                height: '100%',
+                objectFit: 'contain',
+                transform: `scale(${viewerScale})`,
+                transformOrigin: 'center center',
+                transition: 'transform 80ms linear',
+                userSelect: 'none'
+              }}
+            />
+
+            <div style={{ position: 'absolute', top: 10, right: 10, display: 'flex', gap: 8 }}>
+              <button onClick={() => closeViewer()} style={{ padding: '8px 10px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer' }}>Close</button>
+            </div>
+
+            <div style={{ position: 'absolute', bottom: 12, left: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                onClick={() => {
+                  if (selectedPhotoIndex === null) return;
+                  const next = (selectedPhotoIndex - 1 + CONFIG.photos.body.length) % CONFIG.photos.body.length;
+                  setSelectedPhotoIndex(next);
+                  setViewerScale(1);
+                }}
+                style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer' }}
+              >
+                Prev
+              </button>
+              <button
+                onClick={() => setViewerScale((s) => Math.min(4, s + 0.2))}
+                style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer' }}
+              >
+                +
+              </button>
+              <button
+                onClick={() => setViewerScale((s) => Math.max(1, s - 0.2))}
+                style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer' }}
+              >
+                -
+              </button>
+              <button
+                onClick={() => {
+                  if (selectedPhotoIndex === null) return;
+                  const next = (selectedPhotoIndex + 1) % CONFIG.photos.body.length;
+                  setSelectedPhotoIndex(next);
+                  setViewerScale(1);
+                }}
+                style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.55)', border: '1px solid rgba(255,255,255,0.2)', color: '#fff', cursor: 'pointer' }}
+              >
+                Next
+              </button>
+              <div style={{ marginLeft: 10, color: 'rgba(255,255,255,0.7)', fontSize: 12, letterSpacing: 1 }}>
+                {(selectedPhotoIndex ?? 0) + 1} / {CONFIG.photos.body.length} (wheel to zoom)
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {aiEnabled ? (
+        <GestureController onGesture={setSceneState} onMove={setRotationSpeed} onStatus={setAiStatus} debugMode={debugMode} />
+      ) : null}
 
       {/* UI - Stats */}
       <div style={{ position: 'absolute', bottom: '30px', left: '40px', color: '#888', zIndex: 10, fontFamily: 'sans-serif', userSelect: 'none' }}>
@@ -653,6 +838,9 @@ export default function GrandTreeApp() {
 
       {/* UI - Buttons */}
       <div style={{ position: 'absolute', bottom: '30px', right: '40px', zIndex: 10, display: 'flex', gap: '10px' }}>
+        <button onClick={() => setAiEnabled((v) => !v)} style={{ padding: '12px 15px', backgroundColor: aiEnabled ? '#00C853' : 'rgba(0,0,0,0.5)', border: '1px solid rgba(255, 255, 255, 0.15)', color: aiEnabled ? '#001a08' : '#ddd', fontFamily: 'sans-serif', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
+           {aiEnabled ? 'AI ON' : 'AI OFF'}
+        </button>
         <button onClick={() => setDebugMode(!debugMode)} style={{ padding: '12px 15px', backgroundColor: debugMode ? '#FFD700' : 'rgba(0,0,0,0.5)', border: '1px solid #FFD700', color: debugMode ? '#000' : '#FFD700', fontFamily: 'sans-serif', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
            {debugMode ? 'HIDE DEBUG' : '🛠 DEBUG'}
         </button>
