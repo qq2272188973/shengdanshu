@@ -25,7 +25,7 @@ const bodyPhotoPaths = [
 ];
 
 // --- 视觉配置 ---
-const CONFIG = {
+const CONFIG = { // 摄像机位置
   colors: {
     emerald: '#004225', // 纯正祖母绿
     gold: '#FFD700',
