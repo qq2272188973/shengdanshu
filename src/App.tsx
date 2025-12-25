@@ -19,8 +19,8 @@ import * as random from 'maath/random';
 const TOTAL_NUMBERED_PHOTOS = 22;
 // 修改：将 top.jpg 加入到数组开头
 const bodyPhotoPaths = [
-  '/photos/top.jpg',
-  ...Array.from({ length: TOTAL_NUMBERED_PHOTOS }, (_, i) => `/photos/${i + 1}.jpg`)
+  `${import.meta.env.BASE_URL}photos/top.jpg`,
+  ...Array.from({ length: TOTAL_NUMBERED_PHOTOS }, (_, i) => `${import.meta.env.BASE_URL}photos/${i + 1}.jpg`)
 ];
 
 // --- 视觉配置 ---
